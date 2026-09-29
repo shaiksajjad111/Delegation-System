@@ -285,6 +285,18 @@ function escapeHTML(text) {
     return div.innerHTML;
 }
 
+function formatDoerName(doer) {
+    if (!doer) return "";
+    const name = String(doer.name || "").trim();
+    const phone = String(doer.phone || "").trim();
+    if (!phone) return name;
+    // Avoid displaying the phone twice if the database name already contains it.
+    if (new RegExp(`\\s-\\s${phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`).test(name)) {
+        return name;
+    }
+    return `${name} - ${phone}`;
+}
+
 function initials(name) {
     if (!name) return "?";
     return name
@@ -431,7 +443,7 @@ async function loadUsers() {
         users.forEach(user => {
             const option = document.createElement("option");
             option.value = user.id;
-            option.textContent = user.name;
+            option.textContent = formatDoerName(user);
             select.appendChild(option);
         });
 
@@ -485,25 +497,51 @@ async function loadDoerFilterOptions() {
     }
 }
 
+function getUniqueFilterDoers() {
+    const unique = new Map();
+
+    (doersCache || []).forEach(d => {
+        const canonical = String(d.name || "")
+            .trim()
+            .replace(/\s*-\s*\d{7,15}\s*$/, "")
+            .toLowerCase();
+
+        const existing = unique.get(canonical);
+        const score = (d.phone ? 2 : 0) + (/\d{7,15}\s*$/.test(String(d.name || "")) ? 1 : 0);
+        const existingScore = existing
+            ? (existing.phone ? 2 : 0) + (/\d{7,15}\s*$/.test(String(existing.name || "")) ? 1 : 0)
+            : -1;
+
+        if (!existing || score > existingScore) {
+            unique.set(canonical, d);
+        }
+    });
+
+    return [...unique.values()].sort((a, b) =>
+        String(a.name || "").localeCompare(String(b.name || ""))
+    );
+}
+
 function populateDoerSelects() {
 
     const taskDoerFilter = document.getElementById("taskDoerFilter");
     const dailyPendingSelect = document.getElementById("dailyPendingDoerSelect");
     const wkndotDoerSelect = document.getElementById("wkndotDoerSelect");
+    const filterDoers = getUniqueFilterDoers();
 
     if (taskDoerFilter) {
         taskDoerFilter.innerHTML = `<option value="">All Doers</option>` +
-            doersCache.map(d => `<option value="${d.id}">${escapeHTML(d.name)}</option>`).join("");
+            filterDoers.map(d => `<option value="${d.id}">${escapeHTML(formatDoerName(d))}</option>`).join("");
     }
 
     if (dailyPendingSelect) {
         dailyPendingSelect.innerHTML = `<option value="">Select a doer…</option>` +
-            doersCache.map(d => `<option value="${d.id}">${escapeHTML(d.name)}</option>`).join("");
+            filterDoers.map(d => `<option value="${d.id}">${escapeHTML(formatDoerName(d))}</option>`).join("");
     }
 
     if (wkndotDoerSelect) {
         wkndotDoerSelect.innerHTML = `<option value="">All Doers</option>` +
-            doersCache.map(d => `<option value="${d.id}">${escapeHTML(d.name)}</option>`).join("");
+            filterDoers.map(d => `<option value="${d.id}">${escapeHTML(formatDoerName(d))}</option>`).join("");
     }
 }
 
@@ -916,13 +954,14 @@ async function reviseTask(id) {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const task = await response.json();
-        // Same rule as the server: the WKNDOT week is the week of the
-        // date the task is being moved FROM (its current planned_date).
-        const movedFromDate = task.planned_date;
+        const originalDate = task.original_planned_date || task.planned_date;
 
-        if (!movedFromDate) return;
+        if (!originalDate) return;
 
-        const taskWeek = wkndotWeekOf(parseISODateUTC(movedFromDate));
+        const taskWeek = wkndotWeekOf(parseISODateUTC(originalDate));
+        const currentWeek = wkndotWeekOf(istTodayAsUTCDate());
+
+        if (taskWeek.start !== currentWeek.start) return;
 
         reviseWkndotState.required = true;
         reviseWkndotState.weekStart = taskWeek.start;
@@ -962,16 +1001,16 @@ function renderReviseWkndotSection() {
             : "Marked as Do Not Mark As Negative for this week";
 
         section.innerHTML = `
-            <div class="wkndot-midweek-label">WKNDOT for commitment week (${weekLabel})</div>
-            <p class="wkndot-midweek-copy">This task already has a WKNDOT decision for this commitment week - it won't be asked again.</p>
+            <div class="wkndot-midweek-label">WKNDOT for this week (${weekLabel})</div>
+            <p class="wkndot-midweek-copy">This task already has a WKNDOT decision for this week - it won't be asked again.</p>
             <div class="wkndot-existing-chip ${reviseWkndotState.existingDecision === "Negative" ? "negative" : "non-negative"}">${decisionLabel}</div>
         `;
 
     } else {
 
         section.innerHTML = `
-            <div class="wkndot-midweek-label">WKNDOT for commitment week (${weekLabel})</div>
-            <p class="wkndot-midweek-copy">This task's commitment falls in ${weekLabel}. Because you are revising it, choose how this commitment should be treated for WKNDOT.</p>
+            <div class="wkndot-midweek-label">WKNDOT for this week (${weekLabel})</div>
+            <p class="wkndot-midweek-copy">This task's original commitment falls in the current week and is being shifted before it's done. How should this be treated?</p>
             <div class="wkndot-choice-row">
                 <button type="button" class="wkndot-choice-btn negative" id="wkndotChoiceNegative" onclick="selectMidWeekWkndotDecision('Negative')">Mark as Negative for this week</button>
                 <button type="button" class="wkndot-choice-btn non-negative" id="wkndotChoiceNonNegative" onclick="selectMidWeekWkndotDecision('Non-Negative')">Do not mark as Negative</button>
@@ -1318,21 +1357,21 @@ function renderDoerPerformance(doers) {
     const list = document.getElementById("doerPerformanceList");
 
     if (!doers || doers.length === 0) {
-        list.innerHTML = emptyState("No doers yet", "Add doers on the backend to see performance here.");
+        list.innerHTML = emptyState("No doers yet", "Add doers with tasks to see performance here.");
         return;
     }
 
     list.innerHTML = doers.map(d => `
         <div class="doer-row">
-            <button class="doer-name-link" onclick="openDoerHistory(${d.id}, '${escapeHTML(d.name).replace(/'/g, "\\'")}')">
-                <div class="avatar">${escapeHTML(initials(d.name))}</div>
-                <span>${escapeHTML(d.name)}</span>
+            <button class="doer-name-link" onclick="openDoerHistory(${d.id}, '${escapeHTML(formatDoerName(d)).replace(/'/g, "\\'")}')">
+                <div class="avatar">${escapeHTML(initials(formatDoerName(d)))}</div>
+                <span>${escapeHTML(formatDoerName(d))}</span>
             </button>
             <div class="doer-stat" data-label="Assigned">${d.total_assigned}</div>
             <div class="doer-stat" data-label="Completed">${d.completed}</div>
             <div class="doer-stat" data-label="Pending">${d.pending}</div>
             <div class="progress-cell">
-                <div class="progress-track">
+                <div class="progress-track" title="Completion: ${d.completion_percentage}%">
                     <div class="progress-fill" style="width:${d.completion_percentage}%"></div>
                 </div>
                 <div class="progress-pct">${d.completion_percentage}%</div>
@@ -1352,19 +1391,25 @@ function renderTasksByDoerChart(doers) {
         return;
     }
 
-    const maxTotal = Math.max(...withTasks.map(d => d.total_assigned));
+    // Every bar is scaled against the largest total in the selected
+    // period. Green + red always add up to the doer's total.
+    const maxTotal = Math.max(...withTasks.map(d => Number(d.total_assigned) || 0));
 
     wrap.innerHTML = withTasks.map(d => {
-        const completedPct = (d.completed / maxTotal) * 100;
-        const pendingPct = (d.pending / maxTotal) * 100;
+        const total = Number(d.total_assigned) || 0;
+        const completed = Math.max(0, Number(d.completed) || 0);
+        const pending = Math.max(0, total - completed);
+        const completedPct = maxTotal > 0 ? (completed / maxTotal) * 100 : 0;
+        const pendingPct = maxTotal > 0 ? (pending / maxTotal) * 100 : 0;
+
         return `
             <div class="bar-row">
-                <div class="bar-label" title="${escapeHTML(d.name)}">${escapeHTML(d.name)}</div>
+                <div class="bar-label" title="${escapeHTML(formatDoerName(d))}">${escapeHTML(formatDoerName(d))}</div>
                 <div class="bar-track">
-                    <div class="bar-fill-completed" style="width:${completedPct}%"></div>
-                    <div class="bar-fill-pending" style="width:${pendingPct}%"></div>
+                    ${completed > 0 ? `<div class="bar-fill-completed" style="width:${completedPct}%" title="Completed: ${completed}" aria-label="Completed: ${completed}"></div>` : ""}
+                    ${pending > 0 ? `<div class="bar-fill-pending" style="width:${pendingPct}%" title="Pending: ${pending}" aria-label="Pending: ${pending}"></div>` : ""}
                 </div>
-                <div class="bar-total">${d.total_assigned}</div>
+                <div class="bar-total">${total}</div>
             </div>
         `;
     }).join("");
@@ -1374,8 +1419,12 @@ function renderStatusDonut(summary) {
 
     const wrap = document.getElementById("statusDonutWrap");
 
-    const completed = summary.completed || 0;
-    const pending = summary.pending || 0;
+    const completed = Number(summary.completed || 0);
+    // The donut is explicitly "Completed vs Pending", so every task
+    // that is not completed (including Week Shifted/revised work) is
+    // shown in the red pending portion. The separate summary card
+    // still keeps Week Shifted as its own count.
+    const pending = Math.max(0, Number(summary.total || 0) - completed);
     const total = completed + pending;
 
     if (total === 0) {
@@ -1579,18 +1628,6 @@ function renderDoerHistorySummary(summary) {
             <div class="stat-label">Pending</div>
             <div class="stat-value">${summary.pending}</div>
         </div>
-        <div class="stat-card week-shifted">
-            <div class="stat-label">Week Shifted</div>
-            <div class="stat-value">${summary.week_shifted ?? 0}</div>
-        </div>
-        <div class="stat-card pending">
-            <div class="stat-label">Revised</div>
-            <div class="stat-value">${summary.revised}</div>
-        </div>
-        <div class="stat-card overdue">
-            <div class="stat-label">Overdue</div>
-            <div class="stat-value">${summary.overdue}</div>
-        </div>
     `;
 }
 
@@ -1642,7 +1679,7 @@ async function onDailyPendingDoerChange() {
     const doer = doersCache.find(d => String(d.id) === String(doerId));
 
     dailyPendingState.doerId = doerId;
-    dailyPendingState.doerName = doer ? doer.name : "";
+    dailyPendingState.doerName = doer ? formatDoerName(doer) : "";
     dailyPendingState.doerPhone = doer ? doer.phone : "";
 
     emptyBlock.style.display = "none";
@@ -1887,30 +1924,21 @@ function buildWkndotWeekOptions() {
     const today = istTodayAsUTCDate();
     const currentWeek = wkndotWeekOf(today);
     const weekdayUTC = today.getUTCDay(); // 0 = Sun ... 6 = Sat
-    const isoWeekday = weekdayUTC === 0 ? 7 : weekdayUTC; // 1 = Mon ... 7 = Sun
 
-    // From Wednesday onward the CURRENT week's WKNDOT is visible (and
-    // selected by default) so it can be watched before Saturday.
-    // On Monday/Tuesday the list starts at last week instead.
-    const currentWeekVisible = isoWeekday >= 3;
+    const currentWeekIsComplete = weekdayUTC === 6 || weekdayUTC === 0;
 
-    const firstMonday = currentWeekVisible
+    const mostRecentMonday = currentWeekIsComplete
         ? mondayOfWeek(today)
         : addDaysUTC(mondayOfWeek(today), -7);
 
     const weeks = [];
 
     for (let i = 0; i < 12; i++) {
-        const mon = addDaysUTC(firstMonday, -7 * i);
+        const mon = addDaysUTC(mostRecentMonday, -7 * i);
         const sat = addDaysUTC(mon, 5);
         const start = toISODateStr(mon);
         const end = toISODateStr(sat);
-        const isCurrent = start === currentWeek.start;
-        weeks.push({
-            start,
-            end,
-            label: formatWkndotWeekLabel(start, end) + (isCurrent ? " · Current week" : "")
-        });
+        weeks.push({ start, end, label: formatWkndotWeekLabel(start, end) });
     }
 
     wkndotWeeks = weeks;
@@ -1960,7 +1988,7 @@ function onWkndotDoerChange() {
     const doer = doersCache.find(d => String(d.id) === String(doerId));
 
     wkndotState.doerId = doerId;
-    wkndotState.doerName = doerId ? (doer ? doer.name : "") : "All Doers";
+    wkndotState.doerName = doerId ? (doer ? formatDoerName(doer) : "") : "All Doers";
 
     loadWkndotData();
 }
@@ -2027,12 +2055,6 @@ async function loadWkndotData() {
     }
 }
 
-// Shown under the numbers so the formula is never a mystery.
-function wkndotFormulaHint(weights) {
-    const w = weights || { negative: 100, non_negative: 25 };
-    return `<p class="card-hint wkndot-print-summary">WKNDOT % = (Negative × ${w.negative}% + Non-Negative × ${w.non_negative}%) ÷ Total tasks × 100. Completed and Pending tasks have 0% impact - pending work is not counted against anyone until it is revised.</p>`;
-}
-
 function wkndotStatCard(label, value, cls) {
     return `
         <div class="stat-card ${cls || ""}">
@@ -2059,20 +2081,14 @@ function renderWkndotAllDoers() {
     const totalOnTime = rows.reduce((sum, r) => sum + r.completed_on_time, 0);
     const totalNegative = rows.reduce((sum, r) => sum + r.negative, 0);
     const totalPending = rows.reduce((sum, r) => sum + r.pending_review, 0);
-    const totalNonNegative = rows.reduce((sum, r) => sum + r.non_negative, 0);
-    const totalImpact = rows.reduce((sum, r) => sum + (r.weighted_impact || 0), 0);
-    const companyPct = totalDue > 0 ? Math.round((totalImpact / totalDue) * 10000) / 100 : 0;
 
     summaryWrap.innerHTML = `
         <div class="summary-grid cols-6 section-gap wkndot-print-summary">
             ${wkndotStatCard("Total Tasks Due", totalDue, "total")}
-            ${wkndotStatCard("Completed", totalOnTime, "completed")}
+            ${wkndotStatCard("Completed On Time", totalOnTime, "completed")}
             ${wkndotStatCard("Negative", totalNegative, "overdue")}
-            ${wkndotStatCard("Non-Negative", totalNonNegative, "week-shifted")}
-            ${wkndotStatCard("Pending", totalPending, "pending")}
-            ${wkndotStatCard("WKNDOT %", companyPct + "%", "completed")}
+            ${wkndotStatCard("Pending Review", totalPending, "week-shifted")}
         </div>
-        ${wkndotFormulaHint(rows[0] && rows[0].weights)}
 
         <div class="table-wrapper wkndot-print-table">
             <table>
@@ -2125,20 +2141,23 @@ function renderWkndotSingleDoer() {
     summaryWrap.innerHTML = `
         <div class="summary-grid cols-6 section-gap wkndot-print-summary">
             ${wkndotStatCard("Total Tasks Due", row.total_due, "total")}
-            ${wkndotStatCard("Completed", row.completed, "completed")}
+            ${wkndotStatCard("Completed On Time", row.completed_on_time, "completed")}
             ${wkndotStatCard("Negative", row.negative, "overdue")}
             ${wkndotStatCard("Non-Negative", row.non_negative, "week-shifted")}
-            ${wkndotStatCard("Pending", row.pending_review, "pending")}
+            ${wkndotStatCard("Pending Review", row.pending_review, "pending")}
             ${wkndotStatCard("WKNDOT %", row.wkndot_percentage + "%", "completed")}
         </div>
-        ${wkndotFormulaHint(row.weights)}
-        <p class="card-hint wkndot-print-summary">Weighted impact: <strong>${row.weighted_impact}</strong> of ${row.total_due} tasks · Negative Rate: <strong>${row.negative_rate}%</strong> · Avg Delay: <strong>${row.avg_delay !== null ? row.avg_delay + " days" : "—"}</strong> · Max Delay: <strong>${row.max_delay !== null ? row.max_delay + " days" : "—"}</strong></p>
+        <p class="card-hint wkndot-print-summary">Negative Rate: <strong>${row.negative_rate}%</strong> · Avg Delay: <strong>${row.avg_delay !== null ? row.avg_delay + " days" : "—"}</strong> · Max Delay: <strong>${row.max_delay !== null ? row.max_delay + " days" : "—"}</strong></p>
     `;
 
     renderWkndotTaskList(wkndotState.tasks);
 }
 
 function wkndotTaskStatusBlock(task) {
+
+    if (task.completed_on_time) {
+        return `<span class="badge completed">Completed On Time</span>`;
+    }
 
     if (task.review_status === "Negative") {
         return `<span class="wkndot-decided-chip negative">Negative</span>`;
@@ -2223,7 +2242,7 @@ async function submitWkndotReview(taskId, reviewStatus) {
         const data = await response.json();
 
         if (!response.ok) {
-            throw new Error(data.detail ? `${data.error}: ${data.detail}` : (data.error || "Failed to save WKNDOT decision"));
+            throw new Error(data.error || "Failed to save WKNDOT decision");
         }
 
         showToast(`Marked as ${reviewStatus}.`, "success");
