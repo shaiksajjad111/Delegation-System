@@ -1370,6 +1370,8 @@ function renderDoerPerformance(doers) {
             <div class="doer-stat" data-label="Assigned">${d.total_assigned}</div>
             <div class="doer-stat" data-label="Completed">${d.completed}</div>
             <div class="doer-stat" data-label="Pending">${d.pending}</div>
+            <div class="doer-stat" data-label="Overdue">${d.overdue}</div>
+            <div class="doer-stat" data-label="Revised">${d.revised}</div>
             <div class="progress-cell">
                 <div class="progress-track" title="Completion: ${d.completion_percentage}%">
                     <div class="progress-fill" style="width:${d.completion_percentage}%"></div>

@@ -860,7 +860,7 @@ button.stat-card.active {
 
 .doer-row {
     display: grid;
-    grid-template-columns: 1.7fr 0.65fr 0.65fr 0.65fr 1.2fr;
+    grid-template-columns: 1.7fr 0.55fr 0.65fr 0.65fr 0.65fr 0.65fr 1.2fr;
     align-items: center;
     gap: 14px;
     padding: 13px 0;
